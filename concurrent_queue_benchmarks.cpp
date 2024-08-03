@@ -1,171 +1,309 @@
 
-#include <vector>
 #include <atomic>
 #include <chrono>
 #include <iostream>
+#include <locale>
+#include <print>
+#include <vector>
 
-#include "random_num.h"
-#include "UnboundedBufferDequeBased.h"
-#include "BoundedBufferRingBased.h"
+#include "Barrier.h"
 #include "BoostBoundedBufferRingBased.h"
+#include "BoundedBufferRingBased.h"
 #include "MoodeyCamelQueues.h"
+#include "UnboundedBufferDequeBased.h"
 
-constexpr int kQUEUE_SIZE = 4096;
+constexpr unsigned kQUEUE_SIZE = 4096;
+constexpr unsigned kNUM_ITEMS = 1'008'000;
 
-template<typename Queue>
-Queue
-createQueue() {
+using namespace std::chrono;
+using nano_t = nanoseconds::rep;
+
+template <typename Queue>
+Queue createQueue() {
     if constexpr (is_bounded_v<Queue>)
         return Queue(kQUEUE_SIZE);
     else
         return Queue();
 }
 
-template <typename queue_t>
-std::pair<std::chrono::microseconds, std::chrono::microseconds> run_benchmark(
-    const std::vector<std::vector<int>>& item_sets, const int num_threads, const long total_sum) {
+enum class BenchmarkType {
+    Balanced,
+    SingleProducer,
+    SingleConsumer,
+};
 
-    std::atomic<int> ready_threads = 0;
-    std::vector<std::chrono::microseconds> push_timings(num_threads);
-    std::vector<std::chrono::microseconds> pop_timings(num_threads);
-    auto queue = createQueue<queue_t>();
+std::string format_number(const long num) {
+    std::stringstream ss;
+    ss.imbue(std::locale(""));
+    ss << num;
+    return ss.str();
+}
 
-    auto producer = [&](const std::vector<int>& items, const std::size_t thread_idx) {
-        ready_threads.fetch_add(1, std::memory_order_relaxed);
-        while (ready_threads.load(std::memory_order_relaxed) != num_threads * 2) {
-        }
+std::string format_number(const long double num) {
+    std::stringstream ss;
+    ss.imbue(std::locale(""));
+    ss << std::fixed << std::setprecision(2) << num;
+    return ss.str();
+}
 
-        const auto start_time = std::chrono::high_resolution_clock::now();
+template <typename Queue>
+void producer(Queue& queue, unsigned num_items, Barrier& barrier, std::atomic<nano_t>& start) {
+    barrier.wait();
+    const unsigned stop_flag = num_items + 1;
 
-        for (const auto& item : items) queue.push(item);
-        queue.push(0);  // terminate signal
+    const auto now = high_resolution_clock::now();
+    nano_t expected = 0;
+    start.compare_exchange_strong(expected,
+                                  duration_cast<nanoseconds>(now.time_since_epoch()).count(),
+                                  std::memory_order::acq_rel, std::memory_order::relaxed);
 
-        const auto end_time = std::chrono::high_resolution_clock::now();
-        push_timings[thread_idx] =
-            std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-    };
-
-    std::vector<int> sums;
-    auto consumer = [&](const std::size_t thread_idx) {
-        ready_threads.fetch_add(1, std::memory_order_relaxed);
-        while (ready_threads.load(std::memory_order_relaxed) != num_threads * 2) {
-        }
-
-        const auto start_time = std::chrono::high_resolution_clock::now();
-
-        int n = -1;
-        int local_sum = 0;
-        for (;;) {
-            queue.pop(n);
-            if (n == 0) break;
-            local_sum += n;
-        }
-
-        const auto end_time = std::chrono::high_resolution_clock::now();
-        pop_timings[thread_idx] =
-            std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-        sums.emplace_back(local_sum);
-    };
-
-    std::vector<std::thread> push_threads;
-    push_threads.reserve(num_threads);
-    std::vector<std::thread> pop_threads;
-    pop_threads.reserve(num_threads);
-
-    for (std::size_t i = 0; i < num_threads; ++i) {
-        push_threads.emplace_back(producer, item_sets[i], i);
-        pop_threads.emplace_back(consumer, i);
+    for (unsigned n = 1; n <= stop_flag; ++n) {
+        queue.push(n);
     }
-    for (auto& t : push_threads) t.join();
-    for (auto& t : pop_threads) t.join();
+}
 
-    std::chrono::microseconds total_push_time = std::chrono::microseconds::zero();
-    for (const auto& time : push_timings) total_push_time += time;
-    std::chrono::microseconds total_pop_time = std::chrono::microseconds::zero();
-    for (const auto& time : pop_timings) total_pop_time += time;
+template <typename Queue>
+void single_producer(Queue& queue, const unsigned num_items, Barrier& barrier,
+                     std::atomic<nano_t>& start, const unsigned consumer_count) {
+    barrier.wait();
 
-    const long local_total_sum = std::accumulate(sums.begin(), sums.end(), 0L);
-    if (local_total_sum != total_sum) {
-            std::cerr << "Error: total sum mismatch\n";
+    const auto now = high_resolution_clock::now();
+    nano_t expected = 0;
+    start.compare_exchange_strong(expected,
+                                  duration_cast<nanoseconds>(now.time_since_epoch()).count(),
+                                  std::memory_order::acq_rel, std::memory_order::relaxed);
+
+    for (unsigned n = 1; n <= num_items; ++n) {
+        queue.push(n);
     }
 
-    return {total_push_time, total_pop_time};
+    const unsigned stop_flag = num_items + 1;
+    for (unsigned i = 0; i < consumer_count; ++i) {
+        queue.push(stop_flag);
+    }
+}
+
+template <typename Queue>
+void consumer(Queue& queue, unsigned stop_flag, Barrier& barrier,
+              std::atomic<unsigned>& active_consumers, nano_t& end, unsigned& sum) {
+    barrier.wait();
+
+    unsigned local_sum = 0;
+    for (;;) {
+        unsigned item;
+        queue.pop(item);
+        if (item == stop_flag) break;
+        local_sum += item;
+    }
+
+    const auto now = high_resolution_clock::now();
+    if (1 == active_consumers.fetch_sub(1, std::memory_order::acq_rel))
+        end = duration_cast<nanoseconds>(now.time_since_epoch()).count();
+
+    sum = local_sum;
+}
+
+template <typename Queue>
+void single_consumer(Queue& queue, unsigned stop_flag, Barrier& barrier, nano_t& end,
+                     unsigned producer_count, unsigned& sum) {
+    barrier.wait();
+
+    unsigned local_sum = 0;
+    for (;;) {
+        unsigned item;
+        queue.pop(item);
+        if (item == stop_flag && 0 == --producer_count) break;
+        local_sum += item;
+    }
+
+    const auto now = high_resolution_clock::now();
+    end = duration_cast<nanoseconds>(now.time_since_epoch()).count();
+
+    sum = local_sum;
+}
+
+template <typename Queue>
+nano_t balanced_benchmark_iteration(const unsigned thread_count,
+                                    const unsigned items_per_producer) {
+    Barrier barrier;
+    std::vector<std::thread> threads(thread_count * 2);
+    std::vector<unsigned> sums(thread_count);
+
+    std::atomic<nano_t> start{0};
+    nano_t end = 0;
+    std::atomic<unsigned> active_consumers{thread_count};
+    auto queue = createQueue<Queue>();
+    for (unsigned i = 0; i < thread_count; ++i) {
+        threads[i] = std::thread(producer<Queue>, std::ref(queue), items_per_producer,
+                                 std::ref(barrier), std::ref(start));
+    }
+
+    for (unsigned i = 0; i < thread_count; ++i) {
+        threads[thread_count + i] =
+            std::thread(consumer<Queue>, std::ref(queue), items_per_producer + 1, std::ref(barrier),
+                        std::ref(active_consumers), std::ref(end), std::ref(sums[i]));
+    }
+
+    barrier.release(thread_count * 2);
+    for (auto& t : threads) t.join();
+
+    return end - start.load(std::memory_order::relaxed);
+}
+
+template <typename Queue>
+nano_t single_producer_benchmark_iteration(const unsigned consumer_count,
+                                           const unsigned items_per_producer) {
+    Barrier barrier;
+    std::vector<std::thread> threads(consumer_count + 1);
+    std::vector<unsigned> sums(consumer_count);
+
+    std::atomic<nano_t> start{0};
+    nano_t end = 0;
+    std::atomic<unsigned> active_consumers{consumer_count};
+    auto queue = createQueue<Queue>();
+
+    threads[0] = std::thread(single_producer<Queue>, std::ref(queue), items_per_producer,
+                             std::ref(barrier), std::ref(start), consumer_count);
+
+    for (unsigned i = 0; i < consumer_count; ++i) {
+        threads[1 + i] =
+            std::thread(consumer<Queue>, std::ref(queue), items_per_producer + 1, std::ref(barrier),
+                        std::ref(active_consumers), std::ref(end), std::ref(sums[i]));
+    }
+
+    barrier.release(consumer_count + 1);
+    for (auto& t : threads) t.join();
+
+    return end - start;
+}
+
+template <typename Queue>
+nano_t single_consumer_benchmark_iteration(const unsigned producer_count,
+                                           const unsigned items_per_producer) {
+    Barrier barrier;
+    std::vector<std::thread> threads(producer_count + 1);
+    unsigned total_sum = 0;
+
+    std::atomic<nano_t> start{0};
+    nano_t end = 0;
+    auto queue = createQueue<Queue>();
+
+    for (unsigned i = 0; i < producer_count; ++i) {
+        threads[i] = std::thread(producer<Queue>, std::ref(queue), items_per_producer,
+                                 std::ref(barrier), std::ref(start));
+    }
+
+    threads[producer_count] =
+        std::thread(single_consumer<Queue>, std::ref(queue), items_per_producer + 1,
+                     std::ref(barrier), std::ref(end), producer_count, std::ref(total_sum));
+
+    barrier.release(producer_count + 1);
+    for (auto& t : threads) t.join();
+    return end - start.load(std::memory_order::relaxed);
+}
+
+template <typename Queue>
+void run_benchmark_set(char const* benchmark_name, BenchmarkType bt, unsigned min_threads,
+                       unsigned max_threads) {
+    constexpr unsigned RUNS = 3;
+    std::cout << benchmark_name << '\n';
+
+    for (unsigned thread_count = min_threads; thread_count <= max_threads; ++thread_count) {
+        nano_t min_duration = std::numeric_limits<nano_t>::max();
+
+        for (unsigned i = 0; i < RUNS; ++i) {
+            switch (bt) {
+                case BenchmarkType::Balanced: {
+                    const unsigned items_per_producer = kNUM_ITEMS / thread_count;
+                    auto duration =
+                        balanced_benchmark_iteration<Queue>(thread_count, items_per_producer);
+                    min_duration = std::min(min_duration, duration);
+                    break;
+                }
+                case BenchmarkType::SingleProducer: {
+                    auto duration =
+                        single_producer_benchmark_iteration<Queue>(thread_count, kNUM_ITEMS);
+                    min_duration = std::min(min_duration, duration);
+                    break;
+                }
+                case BenchmarkType::SingleConsumer: {
+                    const unsigned items_per_producer = kNUM_ITEMS / thread_count;
+                    auto duration = single_consumer_benchmark_iteration<Queue>(thread_count,
+                                                                               items_per_producer);
+                    min_duration = std::min(min_duration, duration);
+                    break;
+                }
+                default: {
+                    assert(false);
+                    break;
+                }
+            }
+        }  // 1 - RUNS loop
+
+        std::println("-> {:<2} Producer {:<2} Consumer - min_time: {:<12} ns - {:<12} msg/s",
+                     bt == BenchmarkType::SingleProducer ? 1 : thread_count,
+                     bt == BenchmarkType::SingleConsumer ? 1 : thread_count,
+                     format_number(min_duration),
+                     format_number(kNUM_ITEMS / (min_duration / static_cast<long double>(1e9))));
+    }  // min_threads - max_threads loop
+}
+
+template <typename Queue>
+void mpmc_benchmark(char const* benchmark_name, unsigned int min_threads,
+                    unsigned int max_threads) {
+    run_benchmark_set<Queue>(benchmark_name, BenchmarkType::Balanced, 2, 4);
+}
+
+template <typename Queue>
+void spsc_benchmark(char const* benchmark_name) {
+    run_benchmark_set<Queue>(benchmark_name, BenchmarkType::Balanced, 1, 1);
+}
+
+template <typename Queue>
+void spmc_benchmark(char const* benchmark_name, unsigned int max_consumer_count) {
+    run_benchmark_set<Queue>(benchmark_name, BenchmarkType::SingleProducer, 2, max_consumer_count);
+}
+
+template <typename Queue>
+void mpsc_benchmark(char const* benchmark_name, unsigned int max_producer_count) {
+    run_benchmark_set<Queue>(benchmark_name, BenchmarkType::SingleConsumer, 2, max_producer_count);
+}
+
+void spsc_benchmark_suite() {
+    std::println("----------- SPSC Benchmarks -----------");
+
+    spsc_benchmark<UnboundedBufferDequeBased<unsigned>>("UnboundedBufferDequeBased");
+
+    std::println();
+}
+
+void mpmc_benchmark_suite() {
+    std::println("----------- MPMC Benchmarks -----------");
+
+    mpmc_benchmark<UnboundedBufferDequeBased<unsigned>>("UnboundedBufferDequeBased", 1, 4);
+
+    std::println();
+}
+
+void spmc_benchmark_suite() {
+    std::println("----------- SPMC Benchmarks -----------");
+
+    spmc_benchmark<UnboundedBufferDequeBased<unsigned>>("UnboundedBufferDequeBased", 4);
+
+    std::println();
+}
+
+void mpsc_benchmark_suite() {
+    std::println("----------- MPSC Benchmarks -----------");
+
+    mpsc_benchmark<UnboundedBufferDequeBased<unsigned>>("UnboundedBufferDequeBased", 4);
+
+    std::println();
 }
 
 int main(int argc, char* argv[]) {
-    // - benchmark constants
-    constexpr int kNUM_ITEMS = 1'000'000;
-    constexpr int kTHREADS = 8;
-
-    // - set up data
-    std::vector<std::vector<int>> item_sets;
-    item_sets.reserve(kTHREADS);
-    for (std::size_t i = 0; i < kTHREADS; ++i)
-        item_sets.emplace_back(RandomNum::randomIntVec(1, 10, kNUM_ITEMS));
-    long total_sum = 0;
-    for (const auto& items : item_sets)
-            total_sum += std::accumulate(items.begin(), items.end(), 0);
-
-    // - run benchmarks using macros
-    /*
-    {
-        const auto start_time = std::chrono::high_resolution_clock::now();
-        auto [push_time, pop_time] =
-            run_benchmark<UnboundedBufferDequeBased<int>>(item_sets, kTHREADS, total_sum);
-        std::cout << "UnboundedBufferDequeBased push time: " << push_time << '\n';
-        std::cout << "UnboundedBufferDequeBased pop time: " << pop_time << '\n';
-        const auto end_time = std::chrono::high_resolution_clock::now();
-        std::cout
-            << "Total time: "
-            << std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time) << "\n\n";
-    }
-
-    {
-        const auto start_time = std::chrono::high_resolution_clock::now();
-        auto [push_time, pop_time] =
-            run_benchmark<BoundedBufferRingBased<int>>(item_sets, kTHREADS, total_sum);
-        std::cout << "BoundedBufferRingBased push time: " << push_time << '\n';
-        std::cout << "BoundedBufferRingBased pop time: " << pop_time<< "\n\n";
-        const auto end_time = std::chrono::high_resolution_clock::now();
-        std::cout
-            << "Total time: "
-            << std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time) << "\n\n";
-    }
-
-    {
-        const auto start_time = std::chrono::high_resolution_clock::now();
-        auto [push_time, pop_time] =
-            run_benchmark<BoostBoundedBufferRingBased<int>>(item_sets, kTHREADS, total_sum);
-        std::cout << "BoostBoundedBufferRingBased push time: " << push_time << '\n';
-        std::cout << "BoostBoundedBufferRingBased pop time: " << pop_time<< "\n\n";
-        const auto end_time = std::chrono::high_resolution_clock::now();
-        std::cout
-            << "Total time: "
-            << std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time) << "\n\n";
-    }
-    */
-    {
-        const auto start_time = std::chrono::high_resolution_clock::now();
-        auto [push_time, pop_time] =
-            run_benchmark<MoodyCamelBlockingQueue<int>>(item_sets, kTHREADS, total_sum);
-        std::cout << "MoodyCamelBlockingQueue push time: " << push_time << '\n';
-        std::cout << "MoodyCamelBlockingQueue pop time: " << pop_time<< "\n\n";
-        const auto end_time = std::chrono::high_resolution_clock::now();
-        std::cout
-            << "Total time: "
-            << std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time) << "\n\n";
-    }
-    /*
-    {
-        const auto start_time = std::chrono::high_resolution_clock::now();
-        auto [push_time, pop_time] =
-            run_benchmark<MoodyCamelLockFreeQueue<int>>(item_sets, kTHREADS, total_sum);
-        std::cout << "MoodyCamelLockFreeQueue push time: " << push_time << '\n';
-        std::cout << "MoodyCamelLockFreeQueue pop time: " << pop_time<< "\n\n";
-        const auto end_time = std::chrono::high_resolution_clock::now();
-        std::cout
-            << "Total time: "
-            << std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time) << "\n\n";
-    }
-    */
+    spsc_benchmark_suite();
+    mpmc_benchmark_suite();
+    spmc_benchmark_suite();
+    mpsc_benchmark_suite();
 }

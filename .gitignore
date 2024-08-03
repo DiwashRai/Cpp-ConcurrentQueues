@@ -34,6 +34,8 @@
 # Build dirs
 cmake-build-debug/
 cmake-build-release/
+Debug/
+Release/
 
 # CLion
 .idea/

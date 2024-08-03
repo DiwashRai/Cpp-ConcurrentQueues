@@ -23,7 +23,8 @@ add_executable(queue_tests
         RingBuffer.h
         BoostBoundedBufferRingBased.h
         CrashingConcurrentSumTest.cpp
-        MoodeyCamelQueues.h)
+        MoodeyCamelQueues.h
+        Barrier.h)
 
 target_link_libraries(queue_tests
         GTest::gtest
