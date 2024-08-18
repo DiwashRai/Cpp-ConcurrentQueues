@@ -9,18 +9,18 @@
 #include "boost/circular_buffer.hpp"
 
 template <class T>
-class BoostBoundedBufferRingBased {
+class MutexBoostRingBufferQueue {
 public:
     using container_type = boost::circular_buffer<T>;
     using size_type = typename container_type::size_type;
     using value_type = typename container_type::value_type;
     using param_type = typename boost::call_traits<value_type>::param_type;
 
-    explicit BoostBoundedBufferRingBased(size_type capacity = 2048)
+    explicit MutexBoostRingBufferQueue(size_type capacity = 2048)
         : m_unread(0), m_container(capacity) {}
 
-    BoostBoundedBufferRingBased(const BoostBoundedBufferRingBased&) = delete;
-    BoostBoundedBufferRingBased& operator=(const BoostBoundedBufferRingBased&) = delete;
+    MutexBoostRingBufferQueue(const MutexBoostRingBufferQueue&) = delete;
+    MutexBoostRingBufferQueue& operator=(const MutexBoostRingBufferQueue&) = delete;
 
     bool push(param_type item) {
         {
@@ -75,7 +75,7 @@ private:
     std::condition_variable m_not_full;
 };
 
-static_assert(ConcurrentQueue<BoostBoundedBufferRingBased<int>>,
+static_assert(ConcurrentQueue<MutexBoostRingBufferQueue<int>>,
               "boost_bounded_ring_based does not satisfy the ConcurrentQueue concept");
 
 #endif  // BOOST_BOUNDED_BUFFER_RING_BASED_H

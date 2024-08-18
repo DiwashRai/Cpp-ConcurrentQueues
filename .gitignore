@@ -39,3 +39,6 @@ Release/
 
 # CLion
 .idea/
+
+# vim-cmake
+.cache/

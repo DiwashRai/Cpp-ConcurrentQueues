@@ -58,7 +58,8 @@ public:
     }
 
     bool pop(T& item) {
-        return queue_.try_dequeue(item);
+        while (!queue_.try_dequeue(item)){}
+        return true;
     }
 
     bool try_pop(T& item) {

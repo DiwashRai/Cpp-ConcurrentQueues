@@ -9,11 +9,11 @@
 #include "RingBuffer.h"
 
 template<typename T>
-class BoundedBufferRingBased {
+class MutexRingBufferQueue {
 public:
     using value_type = T;
 
-    explicit BoundedBufferRingBased(std::size_t capacity = 256) : buffer_(capacity) {}
+    explicit MutexRingBufferQueue(std::size_t capacity = 256) : buffer_(capacity) {}
 
     bool push(const T& item) {
         {
@@ -69,10 +69,10 @@ private:
     std::size_t max_size_ = 0;
 };
 
-static_assert(ConcurrentQueue<BoundedBufferRingBased<int>>,
+static_assert(ConcurrentQueue<MutexRingBufferQueue<int>>,
               "BoundedBufferRingBased does not satisfy the ConcurrentQueue concept");
 
 template<typename T>
-struct is_bounded<BoundedBufferRingBased<T>> : std::true_type {};
+struct is_bounded<MutexRingBufferQueue<T>> : std::true_type {};
 
 #endif //BLOCKINGBOUNDEDQUEUE_H

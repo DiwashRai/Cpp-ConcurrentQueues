@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.28)
 project(Cpp_ConcurrentQueues)
 
+message(STATUS "C++ Compiler: ${CMAKE_CXX_COMPILER}")
+message(STATUS "C++ Compiler Version: ${CMAKE_CXX_COMPILER_VERSION}")
+message(STATUS "C++ Compiler Flags: ${CMAKE_CXX_FLAGS}")
+
 set(CMAKE_CXX_STANDARD 23)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -11,20 +15,22 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 
 find_package(GTest REQUIRED)
-find_package(Boost COMPONENTS circular_buffer thread callable_traits REQUIRED)
+find_package(Boost COMPONENTS circular_buffer thread callable_traits lockfree REQUIRED)
 
 add_executable(queue_tests
         ConcurrentQueueTests.cpp
         random_num.h
-        UnboundedBufferDequeBased.h
-        TwoLockUnboundedQueue.h
+        MutexDequeQueue.h
+        StdAtomicSPSCQueue.h
         ConcurrentQueueConcept.h
-        BoundedBufferRingBased.h
+        MutexRingBufferQueue.h
         RingBuffer.h
-        BoostBoundedBufferRingBased.h
+        MutexBoostRingBufferQueue.h
         CrashingConcurrentSumTest.cpp
-        MoodeyCamelQueues.h
-        Barrier.h)
+        MoodeyCamelQueueAdapters.h
+        Barrier.h
+        AtomicQueueAdapters.h
+        StdAtomicMPMCQueue.h)
 
 target_link_libraries(queue_tests
         GTest::gtest
@@ -36,16 +42,21 @@ target_link_libraries(queue_tests
 
 add_executable(custom_benchmarks
         concurrent_queue_benchmarks.cpp
-        UnboundedBufferDequeBased.h
-        TwoLockUnboundedQueue.h
+        MutexDequeQueue.h
+        StdAtomicSPSCQueue.h
         ConcurrentQueueConcept.h
-        BoundedBufferRingBased.h
+        MutexRingBufferQueue.h
         RingBuffer.h
-        BoostBoundedBufferRingBased.h
-        MoodeyCamelQueues.h)
+        MutexBoostRingBufferQueue.h
+        MoodeyCamelQueueAdapters.h
+        AtomicQueueAdapters.h
+        BoostLockFreeAdapters.h
+        MutexListQueue.h
+        StdAtomicMPMCQueue.h)
 
 target_link_libraries(custom_benchmarks
         Boost::circular_buffer
         Boost::thread
         Boost::callable_traits
+        Boost::lockfree
 )

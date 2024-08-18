@@ -2,30 +2,28 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
-#include <queue>
-#include <random>
 #include <thread>
 
-#include "BoostBoundedBufferRingBased.h"
-#include "BoundedBufferRingBased.h"
-#include "UnboundedBufferDequeBased.h"
-#include "MoodeyCamelQueues.h"
+#include "MoodeyCamelQueueAdapters.h"
+#include "MutexBoostRingBufferQueue.h"
+#include "MutexDequeQueue.h"
+#include "MutexRingBufferQueue.h"
 #include "random_num.h"
 
 using QueueTypes = testing::Types<
-    UnboundedBufferDequeBased<int>,
-    BoundedBufferRingBased<int>,
-    BoostBoundedBufferRingBased<int>,
+    MutexDequeQueue<int>,
+    MutexRingBufferQueue<int>,
+    MutexBoostRingBufferQueue<int>,
     MoodyCamelBlockingQueue<int>
 >;
 
 using BoundedQueueTypes = testing::Types<
-    BoundedBufferRingBased<int>,
-    BoostBoundedBufferRingBased<int>
+    MutexRingBufferQueue<int>,
+    MutexBoostRingBufferQueue<int>
 >;
 
 using UnboundedQueueTypes = testing::Types<
-    UnboundedBufferDequeBased<int>
+    MutexDequeQueue<int>
 >;
 
 template <typename T>

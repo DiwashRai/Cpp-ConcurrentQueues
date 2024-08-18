@@ -8,7 +8,7 @@
 #include "ConcurrentQueueConcept.h"
 
 template<typename T>
-class UnboundedBufferDequeBased {
+class MutexDequeQueue {
 public:
     using value_type = T;
 
@@ -56,8 +56,8 @@ private:
     std::condition_variable not_empty_;
 };
 
-static_assert(ConcurrentQueue<UnboundedBufferDequeBased<int>>,
-              "UnboundedBufferDequeBased does not satisfy the ConcurrentQueue concept");
+static_assert(ConcurrentQueue<MutexDequeQueue<int>>,
+              "MutexDequeQueue does not satisfy the ConcurrentQueue concept");
 
 #endif //BASICTSQUEUE_H
 
