@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <iostream>
+#include <limits>
 #include <locale>
 #include <numeric>
 #include <print>
@@ -17,8 +18,12 @@
 #include "MutexDequeQueue.h"
 #include "MutexListQueue.h"
 #include "MutexRingBufferQueue.h"
-#include "StdAtomicSPSCQueue.h"
 #include "StdAtomicMPMCQueue.h"
+#include "StdAtomicSPSCQueue.h"
+#include "alpha_spsc.h"
+#include "RigtorpQueueAdapters.h"
+#include "atomic_queue/atomic_queue.h"
+#include "CppConAdapters.h"
 
 constexpr unsigned kQUEUE_SIZE = 16'384;
 constexpr uint64_t kNUM_ITEMS = 1'008'000;
@@ -156,13 +161,13 @@ nano_t balanced_benchmark_iteration(const unsigned thread_count,
     for (auto& t : threads) t.join();
 
     // check total sum
-    const uint64_t expected_sum = thread_count * (items_per_producer * (1 + items_per_producer) / 2);
-    uint64_t  total_sum = 0;
-    for (const auto sum : sums)
-        total_sum += sum;
+    const uint64_t expected_sum =
+        thread_count * (items_per_producer * (1 + items_per_producer) / 2);
+    uint64_t total_sum = 0;
+    for (const auto sum : sums) total_sum += sum;
     if (total_sum != expected_sum) {
-        std::cerr << "ERROR: total sum is " << total_sum << " expected " << expected_sum * thread_count
-                  << '\n';
+        std::cerr << "ERROR: total sum is " << total_sum << " expected "
+                  << expected_sum * thread_count << '\n';
     }
 
     return end - start.load(std::memory_order::relaxed);
@@ -228,6 +233,8 @@ void run_benchmark_set(char const* benchmark_name, BenchmarkType bt, unsigned mi
 
     for (unsigned thread_count = min_threads; thread_count <= max_threads; ++thread_count) {
         nano_t min_duration = std::numeric_limits<nano_t>::max();
+        nano_t max_duration = std::numeric_limits<nano_t>::min();
+        nano_t total_duration = 0;
 
         for (unsigned i = 0; i < RUNS; ++i) {
             switch (bt) {
@@ -236,12 +243,16 @@ void run_benchmark_set(char const* benchmark_name, BenchmarkType bt, unsigned mi
                     auto duration =
                         balanced_benchmark_iteration<Queue>(thread_count, items_per_producer);
                     min_duration = std::min(min_duration, duration);
+                    max_duration = std::max(max_duration, duration);
+                    total_duration += duration;
                     break;
                 }
                 case BenchmarkType::SingleProducer: {
                     auto duration =
                         single_producer_benchmark_iteration<Queue>(thread_count, kNUM_ITEMS);
                     min_duration = std::min(min_duration, duration);
+                    max_duration = std::max(max_duration, duration);
+                    total_duration += duration;
                     break;
                 }
                 case BenchmarkType::SingleConsumer: {
@@ -249,6 +260,8 @@ void run_benchmark_set(char const* benchmark_name, BenchmarkType bt, unsigned mi
                     auto duration = single_consumer_benchmark_iteration<Queue>(thread_count,
                                                                                items_per_producer);
                     min_duration = std::min(min_duration, duration);
+                    max_duration = std::max(max_duration, duration);
+                    total_duration += duration;
                     break;
                 }
                 default: {
@@ -258,11 +271,17 @@ void run_benchmark_set(char const* benchmark_name, BenchmarkType bt, unsigned mi
             }
         }  // 1 - RUNS loop
 
-        std::println("-> {:>2} Producer {:>2} Consumer - min_time: {:>12} ns - {:>15} msg/s",
-                     bt == BenchmarkType::SingleProducer ? 1 : thread_count,
-                     bt == BenchmarkType::SingleConsumer ? 1 : thread_count,
-                     format_number(min_duration),
-                     format_number(kNUM_ITEMS / (min_duration / static_cast<long double>(1e9))));
+        std::println(
+            "-> {:>2} Producer {:>2} Consumer"
+            " - avg: {:>12} msg/s - min: {:>12} msg/s - max: {:>12} msg/s",
+            bt == BenchmarkType::SingleProducer ? 1 : thread_count,
+            bt == BenchmarkType::SingleConsumer ? 1 : thread_count,
+            format_number(
+                static_cast<long>(kNUM_ITEMS / (static_cast<double>(total_duration) / RUNS / 1e9))),
+            format_number(
+                static_cast<long>(kNUM_ITEMS / (static_cast<double>(max_duration) / 1e9))),
+            format_number(
+                static_cast<long>(kNUM_ITEMS / (static_cast<double>(min_duration) / 1e9))));
     }  // min_threads - max_threads loop
 }
 
@@ -290,21 +309,35 @@ void mpsc_benchmark(char const* benchmark_name, unsigned int max_producer_count)
 void spsc_benchmark_suite() {
     std::println("----------- SPSC Benchmarks -----------");
 
-    spsc_benchmark<MutexDequeQueue<unsigned>>("MutexDequeQueue");
-    //spsc_benchmark<MutexListQueue<unsigned>>("MutexListQueue");
+    // spsc_benchmark<MutexDequeQueue<unsigned>>("MutexDequeQueue");
+    // spsc_benchmark<MutexListQueue<unsigned>>("MutexListQueue");
 
-    //spsc_benchmark<MutexRingBufferQueue<unsigned>>("MutexRingBufferQueue");
-    //spsc_benchmark<MutexBoostRingBufferQueue<unsigned>>("MutexBoostRingBufferQueue");
+    // spsc_benchmark<MutexRingBufferQueue<unsigned>>("MutexRingBufferQueue");
+    // spsc_benchmark<MutexBoostRingBufferQueue<unsigned>>("MutexBoostRingBufferQueue");
     spsc_benchmark<StdAtomicSPSCQueue<unsigned, 16384>>("StdAtomicSPSCQueue");
-    spsc_benchmark<StdAtomicMPMCQueue<unsigned, 16384>>("StdAtomicMPMCQueue");
+    //spsc_benchmark<StdAtomicMPMCQueue<unsigned, 16384>>("StdAtomicMPMCQueue");
+
+    spsc_benchmark<alpha::spsc<unsigned, 16384, std::numeric_limits<unsigned>::max()>>(
+        "alpha::spsc");
+    //std::println("sizeof queue: {}", sizeof(alpha::spsc<unsigned, 16384, 0>));
+    spsc_benchmark<beta::spsc<unsigned, 16384, std::numeric_limits<unsigned>::max()>>("beta::spsc");
+    //std::println("sizeof queue: {}", sizeof(beta::spsc<unsigned, 16384, 0>));
 
     spsc_benchmark<BoostLockFreeSPSCQueue<unsigned, 16384>>("BoostLockFreeSPSCQueue");
+    spsc_benchmark<RigtorpSPSCAdapter<unsigned>>("rigtorp::SPSCQueue");
 
-    //spsc_benchmark<MoodyCamelBlockingQueue<unsigned>>("MoodyCamelBlockingQueue");
-    //spsc_benchmark<MoodyCamelLockFreeQueue<unsigned>>("MoodyCamelLockFreeQueue");
+    // spsc_benchmark<MoodyCamelBlockingQueue<unsigned>>("MoodyCamelBlockingQueue");
+    // spsc_benchmark<MoodyCamelLockFreeQueue<unsigned>>("MoodyCamelLockFreeQueue");
 
     spsc_benchmark<AtomicQueueSPSCAdapter<unsigned, 16384>>("AtomicQueue(SPSC=true)");
-    spsc_benchmark<OptimistAtomicQueueSPSCAdapter<unsigned, 16384>>("OptimistAtomicQueue(SPSC=true)");
+    //std::println("sizeof atomic<unsigned>: {}", sizeof(std::atomic<unsigned>));
+    //std::println("sizeof queue: {}", sizeof(atomic_queue::AtomicQueue<unsigned, 16384>));
+    //spsc_benchmark<OptimistAtomicQueueSPSCAdapter<unsigned, 16384>>(
+    //    "OptimistAtomicQueue(SPSC=true)");
+
+    spsc_benchmark<fifo2_adapter<unsigned, 16384>>("cppcon fifo2");
+    spsc_benchmark<fifo3_adapter<unsigned, 16384>>("cppcon fifo3");
+    spsc_benchmark<fifo4_adapter<unsigned, 16384>>("cppcon fifo4");
 
     std::println();
 }
@@ -313,20 +346,20 @@ void mpmc_benchmark_suite() {
     std::println("----------- MPMC Benchmarks -----------");
 
     mpmc_benchmark<MutexDequeQueue<unsigned>>("MutexDequeQueue", 2, 6);
-    //mpmc_benchmark<MutexListQueue<unsigned>>("MutexListQueue", 2, 6);
+    // mpmc_benchmark<MutexListQueue<unsigned>>("MutexListQueue", 2, 6);
 
-    //mpmc_benchmark<MutexRingBufferQueue<unsigned>>("MutexRingBufferQueue", 2, 6);
-    //mpmc_benchmark<MutexBoostRingBufferQueue<unsigned>>("MutexBoostRingBufferQueue", 2, 6);
-    //mpmc_benchmark<StdAtomicSPSCQueue<unsigned, 16384>>("StdAtomicSPSCQueue", 2, 6);
+    // mpmc_benchmark<MutexRingBufferQueue<unsigned>>("MutexRingBufferQueue", 2, 6);
+    // mpmc_benchmark<MutexBoostRingBufferQueue<unsigned>>("MutexBoostRingBufferQueue", 2, 6);
+    // mpmc_benchmark<StdAtomicSPSCQueue<unsigned, 16384>>("StdAtomicSPSCQueue", 2, 6);
     mpmc_benchmark<StdAtomicMPMCQueue<unsigned, 16384>>("StdAtomicMPMCQueue", 2, 6);
 
     mpmc_benchmark<BoostLockFreeQueue<unsigned, 16384>>("BoostLockFreeQueue", 2, 6);
 
-    //mpmc_benchmark<MoodyCamelBlockingQueue<unsigned>>("MoodyCamelBlockingQueue", 2, 6);
-    //mpmc_benchmark<MoodyCamelLockFreeQueue<unsigned>>("MoodyCamelLockFreeQueue", 2, 6);
+    // mpmc_benchmark<MoodyCamelBlockingQueue<unsigned>>("MoodyCamelBlockingQueue", 2, 6);
+    // mpmc_benchmark<MoodyCamelLockFreeQueue<unsigned>>("MoodyCamelLockFreeQueue", 2, 6);
 
     mpmc_benchmark<AtomicQueueAdapter<unsigned, 16384>>("AtomicQueue", 2, 6);
-    //mpmc_benchmark<OptimistAtomicQueueAdapter<unsigned, 16384>>("OptimistAtomicQueue", 2, 6);
+    // mpmc_benchmark<OptimistAtomicQueueAdapter<unsigned, 16384>>("OptimistAtomicQueue", 2, 6);
 
     std::println();
 }
@@ -365,7 +398,7 @@ void mpsc_benchmark_suite() {
 
 int main(int argc, char* argv[]) {
     spsc_benchmark_suite();
-    mpmc_benchmark_suite();
-    //spmc_benchmark_suite();
-    //mpsc_benchmark_suite();
+    // mpmc_benchmark_suite();
+    // spmc_benchmark_suite();
+    // mpsc_benchmark_suite();
 }

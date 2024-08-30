@@ -6,6 +6,7 @@ message(STATUS "C++ Compiler Version: ${CMAKE_CXX_COMPILER_VERSION}")
 message(STATUS "C++ Compiler Flags: ${CMAKE_CXX_FLAGS}")
 
 set(CMAKE_CXX_STANDARD 23)
+add_compile_options(-Wno-interference-size)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(SANITIZE_FLAGS "-fsanitize=address -fno-omit-frame-pointer -g")
@@ -30,7 +31,8 @@ add_executable(queue_tests
         MoodeyCamelQueueAdapters.h
         Barrier.h
         AtomicQueueAdapters.h
-        StdAtomicMPMCQueue.h)
+        StdAtomicMPMCQueue.h
+        alpha_spsc.h)
 
 target_link_libraries(queue_tests
         GTest::gtest
@@ -52,7 +54,8 @@ add_executable(custom_benchmarks
         AtomicQueueAdapters.h
         BoostLockFreeAdapters.h
         MutexListQueue.h
-        StdAtomicMPMCQueue.h)
+        StdAtomicMPMCQueue.h
+        alpha_spsc.h)
 
 target_link_libraries(custom_benchmarks
         Boost::circular_buffer
