@@ -1,5 +1,5 @@
-#ifndef TWOLOCKUNBOUNDEDQUEUE_H
-#define TWOLOCKUNBOUNDEDQUEUE_H
+#ifndef STD_ATOMIC_SPSC_QUEUE_H
+#define STD_ATOMIC_SPSC_QUEUE_H
 
 #include <atomic>
 
@@ -56,4 +56,4 @@ private:
     alignas(64) std::size_t cached_tail_{0};
 };
 
-#endif  // TWOLOCKUNBOUNDEDQUEUE_H
+#endif  // STD_ATOMIC_SPSC_QUEUE_H

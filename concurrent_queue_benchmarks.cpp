@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <climits>
 #include <iostream>
 #include <limits>
 #include <locale>
@@ -26,7 +27,7 @@
 #include "CppConAdapters.h"
 
 constexpr unsigned kQUEUE_SIZE = 16'384;
-constexpr uint64_t kNUM_ITEMS = 1'008'000;
+constexpr uint64_t kNUM_ITEMS = 400'000'000;
 
 using namespace std::chrono;
 using nano_t = nanoseconds::rep;
@@ -59,8 +60,23 @@ std::string format_number(const long double num) {
     return ss.str();
 }
 
+static void pinThread(int cpu) {
+    if (cpu < 0) {
+        return;
+    }
+    ::cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(cpu, &cpuset);
+    if (::pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) == -1) {
+        std::perror("pthread_setaffinity_rp");
+        std::exit(EXIT_FAILURE);
+    }
+}
+
 template <typename Queue>
 void producer(Queue& queue, unsigned num_items, Barrier& barrier, std::atomic<nano_t>& start) {
+    //pinThread(1);
+
     barrier.wait();
     const unsigned stop_flag = num_items + 1;
 
@@ -99,6 +115,8 @@ void single_producer(Queue& queue, const unsigned num_items, Barrier& barrier,
 template <typename Queue>
 void consumer(Queue& queue, unsigned stop_flag, Barrier& barrier,
               std::atomic<unsigned>& active_consumers, nano_t& end, uint64_t& sum) {
+    //pinThread(11);
+
     barrier.wait();
 
     uint64_t local_sum = 0;
@@ -228,7 +246,7 @@ nano_t single_consumer_benchmark_iteration(const unsigned producer_count,
 template <typename Queue>
 void run_benchmark_set(char const* benchmark_name, BenchmarkType bt, unsigned min_threads,
                        unsigned max_threads) {
-    constexpr unsigned RUNS = 3;
+    constexpr unsigned RUNS = 11;
     std::cout << benchmark_name << '\n';
 
     for (unsigned thread_count = min_threads; thread_count <= max_threads; ++thread_count) {
@@ -314,14 +332,15 @@ void spsc_benchmark_suite() {
 
     // spsc_benchmark<MutexRingBufferQueue<unsigned>>("MutexRingBufferQueue");
     // spsc_benchmark<MutexBoostRingBufferQueue<unsigned>>("MutexBoostRingBufferQueue");
-    spsc_benchmark<StdAtomicSPSCQueue<unsigned, 16384>>("StdAtomicSPSCQueue");
+    //spsc_benchmark<StdAtomicSPSCQueue<unsigned, 16384>>("StdAtomicSPSCQueue");
     //spsc_benchmark<StdAtomicMPMCQueue<unsigned, 16384>>("StdAtomicMPMCQueue");
 
-    spsc_benchmark<alpha::spsc<unsigned, 16384, std::numeric_limits<unsigned>::max()>>(
-        "alpha::spsc");
-    //std::println("sizeof queue: {}", sizeof(alpha::spsc<unsigned, 16384, 0>));
-    spsc_benchmark<beta::spsc<unsigned, 16384, std::numeric_limits<unsigned>::max()>>("beta::spsc");
-    //std::println("sizeof queue: {}", sizeof(beta::spsc<unsigned, 16384, 0>));
+    spsc_benchmark<alpha::spsc<unsigned, 16384, UINT_MAX>>("alpha::spsc - all optimisations");
+    spsc_benchmark<bravo::spsc<unsigned, 16384, UINT_MAX>>("beta::spsc - with false sharing");
+    spsc_benchmark<charlie::spsc<unsigned, 16384, UINT_MAX>>("charlie::spsc - seq_cst mem order");
+    spsc_benchmark<delta::spsc<unsigned, 16384, UINT_MAX>>("delta::spsc - no cached head/tail");
+    spsc_benchmark<echo::spsc<unsigned, 16384, UINT_MAX>>("echo::spsc - array on heap not stack");
+    spsc_benchmark<alpha::spsc<unsigned, 16385, UINT_MAX>>("alpha::spsc - SIZE not power of 2");
 
     spsc_benchmark<BoostLockFreeSPSCQueue<unsigned, 16384>>("BoostLockFreeSPSCQueue");
     spsc_benchmark<RigtorpSPSCAdapter<unsigned>>("rigtorp::SPSCQueue");
@@ -332,12 +351,12 @@ void spsc_benchmark_suite() {
     spsc_benchmark<AtomicQueueSPSCAdapter<unsigned, 16384>>("AtomicQueue(SPSC=true)");
     //std::println("sizeof atomic<unsigned>: {}", sizeof(std::atomic<unsigned>));
     //std::println("sizeof queue: {}", sizeof(atomic_queue::AtomicQueue<unsigned, 16384>));
-    //spsc_benchmark<OptimistAtomicQueueSPSCAdapter<unsigned, 16384>>(
-    //    "OptimistAtomicQueue(SPSC=true)");
+    spsc_benchmark<OptimistAtomicQueueSPSCAdapter<unsigned, 16384>>(
+        "OptimistAtomicQueue(SPSC=true)");
 
-    spsc_benchmark<fifo2_adapter<unsigned, 16384>>("cppcon fifo2");
-    spsc_benchmark<fifo3_adapter<unsigned, 16384>>("cppcon fifo3");
-    spsc_benchmark<fifo4_adapter<unsigned, 16384>>("cppcon fifo4");
+    //spsc_benchmark<fifo2_adapter<unsigned, 16384>>("cppcon fifo2 (atomics)");
+    //spsc_benchmark<fifo3_adapter<unsigned, 16384>>("cppcon fifo3 (memory orders, false sharing)");
+    spsc_benchmark<fifo4_adapter<unsigned, 16384>>("cppcon fifo4 (cached head/tail)");
 
     std::println();
 }
